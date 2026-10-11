@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# jobs — one command for the whole job-search pipeline.
+#
+#   ./jobs update     scrape (fast) -> emails -> dashboard, then done
+#   ./jobs full       same but maximum scope (slow, ~15 min)
+#   ./jobs open       (re)build the dashboard from current data and open it
+#   ./jobs serve      launch the control panel (choose options + run from the page)
+#   ./jobs build      rebuild dashboard only (no scraping)
+#   ./jobs auto on     refresh automatically every morning (08:00)
+#   ./jobs auto off    stop the automatic refresh
+#   ./jobs status     show last refresh time + auto-refresh state
+#
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+PY=python3
+HERE="$PWD"
+MARK="jobs-auto-refresh"
+
+open_file() {                       # open dashboard.html in the browser
+  xdg-open dashboard.html >/dev/null 2>&1 \
+    || $PY -c "import webbrowser,pathlib; webbrowser.open('file://'+str(pathlib.Path('dashboard.html').resolve()))"
+}
+
+pipeline() {                        # $1.. = extra scraper flags
+  echo "▶ 1/4 scraping offers…"      ; $PY scraper.py "$@"
+  echo "▶ 2/4 resolving emails…"     ; $PY enrich_emails.py
+  echo "▶ 3/4 joining shortlist…"    ; $PY merge_shortlist.py >/dev/null
+  echo "▶ 4/4 building dashboard…"   ; $PY build_dashboard.py
+  echo "✓ done — open it with:  ./jobs open"
+}
+
+case "${1:-help}" in
+  update|quick)
+    pipeline --max-pages 2 --max-detail 40 --locations "Lille,France" ;;
+  full)
+    pipeline --max-detail 80 ;;
+  build)
+    $PY merge_shortlist.py >/dev/null; $PY build_dashboard.py; echo "✓ rebuilt dashboard.html" ;;
+  open)
+    $PY build_dashboard.py >/dev/null; open_file; echo "✓ opened dashboard.html" ;;
+  serve)
+    $PY build_dashboard.py >/dev/null
+    echo "Control panel at http://127.0.0.1:8777  (Ctrl-C to stop)"
+    exec $PY server.py --open ;;
+  auto)
+    case "${2:-}" in
+      on)
+        line="0 8 * * * cd $HERE && ./jobs update >> $HERE/auto.log 2>&1 # $MARK"
+        { crontab -l 2>/dev/null | grep -v "$MARK" || true; echo "$line"; } | crontab -
+        echo "✓ auto-refresh ON — every day at 08:00 (log: auto.log)"
+        echo "  turn off with:  ./jobs auto off" ;;
+      off)
+        ( crontab -l 2>/dev/null | grep -v "$MARK" || true ) | crontab -
+        echo "✓ auto-refresh OFF" ;;
+      *) echo "usage: ./jobs auto on|off" ; exit 1 ;;
+    esac ;;
+  status)
+    if [ -f dashboard.html ]; then
+      echo "last refresh : $(date -r dashboard.html '+%Y-%m-%d %H:%M')"
+      read -r n new < <($PY -c "import json;d=json.load(open('offres.json'));print(len(d), sum(1 for o in d if o.get('is_new')))" 2>/dev/null || echo '? ?')
+      echo "offers       : $n  (new since last scan: $new)"
+    else
+      echo "no dashboard yet — run:  ./jobs update"
+    fi
+    if crontab -l 2>/dev/null | grep -q "$MARK"; then
+      echo "auto-refresh : ON (daily 08:00)"
+    else
+      echo "auto-refresh : off"
+    fi ;;
+  *)
+    grep '^#' "$0" | sed '1d;s/^# \{0,1\}//' ;;
+esac

@@ -1,0 +1,10 @@
+# scraped data & generated outputs (contain third-party contact info)
+*.csv
+*.json
+*.log
+dashboard.html
+emails-a-envoyer.md
+shortlist.md
+__pycache__/
+*.pyc
+.env
